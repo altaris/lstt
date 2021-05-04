@@ -1,3 +1,6 @@
+# Super duper secret
+*.secret
+
 # MacOS littering everywhere
 .DS_Store
 
