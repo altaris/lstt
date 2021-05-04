@@ -188,7 +188,7 @@ def resize_stickers(
         raw = Image.open(raw_path)
         coefficient = max(raw.width, raw.height) / 512
         size = (int(raw.width / coefficient), int(raw.height / coefficient))
-        resized = raw.resize(size)
+        resized = raw.resize(size, resample=Image.LANCZOS)
         resized.save(resized_path)
         sticker_data[sid]["resized_path"] = resized_path
     return sticker_data
