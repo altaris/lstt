@@ -1,7 +1,7 @@
 #!python3
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional, Tuple
 import os
 import random
 import re
@@ -21,29 +21,38 @@ def create_telegram_sticker_set(
     telegram_user_id: int,
     sticker_set_name: str,
     sticker_set_title: str,
-) -> Dict[str, Dict]:
-    """Creates the Telegram sticker set"""
+) -> Tuple[Dict[str, Dict], Optional[str]]:
+    """
+    Creates the Telegram sticker set
+
+    Returns:
+        A tuple containing the sticker data dict, and the real name of the
+        sticker set, or ``None`` if it wasn't created.
+    """
     bot = telegram.Bot(telegram_token)
+    sticker_set_name += "_by_" + bot.username
     created = False
     for sid in track(sticker_data.keys(), "🔼 Uploading..."):
         path = sticker_data[sid]["resized_path"]
         if path is None:
             continue
+        sticker = open(path, "rb")
+        emoji = random.choice("🔴🟠🟡🟢🔵🟣")
         try:
             if created:
                 bot.add_sticker_to_set(
                     telegram_user_id,
                     sticker_set_name,
-                    random.choice("🔴🟠🟡🟢🔵🟣"),
-                    path,
+                    emoji,
+                    sticker,
                 )
             else:
                 bot.create_new_sticker_set(
                     telegram_user_id,
                     sticker_set_name,
                     sticker_set_title,
-                    random.choice("🔴🟠🟡🟢🔵🟣"),
-                    path,
+                    emoji,
+                    sticker,
                 )
         except telegram.TelegramError as error:
             if created:
@@ -64,7 +73,7 @@ def create_telegram_sticker_set(
                 print("[red]Aborting... ☹️[/red]")
                 break
         created = True
-    return sticker_data
+    return sticker_data, sticker_set_name if created else None
 
 
 def download_stickers(
@@ -119,9 +128,9 @@ def main(
     sticker_set_name: str = typer.Argument(
         ...,
         help="Name (identification string) of the new Telegram sticker set. "
-        "Must begin with a letter, can’t contain consecutive underscores "
-        "and must end in “_by_<bot username>”. <bot_username> is case "
-        "insensitive. 1-64 characters.",
+        "Must begin with a letter and can't contain consecutive underscores. "
+        "Must be between 1 and 64 characters. Note that the final name of the "
+        "set will be suffixed with '_by_<botusername>'.",
     ),
     sticker_set_title: str = typer.Argument(
         ...,
@@ -144,21 +153,21 @@ def main(
 ):
     """Main function (duh)"""
     sticker_data = get_stickers_urls(sticker_page_url)
-    # TESTING
-    sticker_data = {
-        "12676374": sticker_data["12676374"],
-        "12676375": sticker_data["12676375"],
-    }
     sticker_data = download_stickers(sticker_data, download_directory)
     sticker_data = resize_stickers(sticker_data, download_directory)
-    sticker_data = create_telegram_sticker_set(
+    sticker_data, real_sticker_set_name = create_telegram_sticker_set(
         sticker_data,
         telegram_token,
         telegram_user_id,
         sticker_set_name,
         sticker_set_title,
     )
-    # print(sticker_data)
+    if real_sticker_set_name is not None:
+        print("✨ All done! ✨")
+        print(
+            "Your sticker set if available at",
+            f"https://t.me/addstickers/" + real_sticker_set_name,
+        )
 
 
 def resize_stickers(
