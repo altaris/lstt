@@ -1,2 +1,3 @@
 black
 mypy
+types-requests

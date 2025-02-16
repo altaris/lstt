@@ -1,21 +1,22 @@
 #!python3
 
-from pathlib import Path
-from typing import Dict, Optional, Tuple
+import asyncio
 import os
 import random
 import re
+from pathlib import Path
+from typing import Dict, Optional, Tuple
 
+import requests
+import telegram
+import typer
 from bs4 import BeautifulSoup
 from PIL import Image
-from rich import print
+from rich import print  # pylint: disable=redefined-builtin
 from rich.progress import track
-import telegram
-import requests
-import typer
 
 
-def create_telegram_sticker_set(
+async def create_telegram_sticker_set(
     sticker_data: Dict[str, Dict],
     telegram_token: str,
     telegram_user_id: int,
@@ -29,50 +30,51 @@ def create_telegram_sticker_set(
         A tuple containing the sticker data dict, and the real name of the
         sticker set, or ``None`` if it wasn't created.
     """
-    bot = telegram.Bot(telegram_token)
-    sticker_set_name += "_by_" + bot.username
-    created = False
-    for sid in track(sticker_data.keys(), "🔼 Uploading..."):
-        path = sticker_data[sid]["resized_path"]
-        if path is None:
-            continue
-        sticker = open(path, "rb")
-        emoji = random.choice("🔴🟠🟡🟢🔵🟣")
-        try:
-            if created:
-                bot.add_sticker_to_set(
-                    telegram_user_id,
-                    sticker_set_name,
-                    emoji,
-                    sticker,
-                )
-            else:
-                bot.create_new_sticker_set(
-                    telegram_user_id,
-                    sticker_set_name,
-                    sticker_set_title,
-                    emoji,
-                    sticker,
-                )
-        except telegram.TelegramError as error:
-            if created:
-                print(
-                    "🔼❌ [red]Couldn't add sticker[/red]",
-                    str(path),
-                    "[red]to set:[/red]",
-                    f"({type(error).__name__})",
-                    str(error),
-                )
-            else:
-                print(
-                    "🔼❌ [red]Couldn't create sticker set:[/red]",
-                    f"({type(error).__name__})",
-                    str(error),
-                )
-                # If creation failed, abort
-                print("[red]Aborting... ☹️[/red]")
-                break
-        created = True
+    async with telegram.Bot(telegram_token) as bot:
+        sticker_set_name += "_by_" + bot.username
+        created = False
+        for sid in track(sticker_data.keys(), "🔼 Uploading..."):
+            path = sticker_data[sid]["resized_path"]
+            if path is None:
+                continue
+            sticker = telegram.InputSticker(
+                sticker=open(path, "rb"),
+                emoji_list=[random.choice("🔴🟠🟡🟢🔵🟣")],
+            )
+            try:
+                if created:
+                    await bot.add_sticker_to_set(
+                        user_id=telegram_user_id,
+                        name=sticker_set_name,
+                        sticker=sticker,
+                    )
+                else:
+                    await bot.create_new_sticker_set(
+                        user_id=telegram_user_id,
+                        name=sticker_set_name,
+                        title=sticker_set_title,
+                        stickers=[sticker],
+                        sticker_format="static",
+                    )
+            except telegram.error.TelegramError as error:
+                if created:
+                    print(
+                        "🔼❌ [red]Couldn't add sticker[/red]",
+                        str(path),
+                        "[red]to set:[/red]",
+                        f"({type(error).__name__})",
+                        str(error),
+                    )
+                else:
+                    print(
+                        "🔼❌ [red]Couldn't create sticker set:[/red]",
+                        f"({type(error).__name__})",
+                        str(error),
+                    )
+                    # If creation failed, abort
+                    print("🔼❌ [red]Aborting...[/red]")
+                    break
+            created = True
     return sticker_data, sticker_set_name if created else None
 
 
@@ -87,10 +89,11 @@ def download_stickers(
         url = sticker_data[sid]["url"]
         file_path = download_directory / f"{sid}.png"
         try:
-            response = requests.get(url)
-            response.raise_for_status()
-            with open(file_path, "wb") as file:
-                file.write(response.content)
+            if not file_path.is_file():
+                response = requests.get(url)
+                response.raise_for_status()
+                with open(file_path, "wb") as file:
+                    file.write(response.content)
             sticker_data[sid]["raw_path"] = file_path
         except requests.HTTPError as error:
             sticker_data[sid]["raw_path"] = None
@@ -108,12 +111,15 @@ def get_stickers_urls(line_sticker_url: str) -> Dict[str, Dict]:
     response = requests.get(line_sticker_url)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
-    tags = soup.find_all(attrs={"class": re.compile(".* FnPreview$")})
-    sticker_data = dict()
     pattern = (
-        "background-image:url\((https://stickershop.line-scdn.net/stickershop/"
-        "v\d+/sticker/(\d+)/android/sticker.png);compress=true\);"
+        r"background-image:url\((https://stickershop.line-scdn.net/"
+        r"stickershop/v\d+/sticker/(\d+)/android/sticker.png)"
+        r"(;compress=true)?\);"
     )
+    tags = soup.find_all(
+        attrs={"class": re.compile(r".*Image$"), "style": re.compile(pattern)}
+    )
+    sticker_data = dict()
     for tag in tags:
         if match := re.search(pattern, tag["style"]):
             sticker_data[match.group(2)] = {"url": match.group(1)}
@@ -155,12 +161,14 @@ def main(
     sticker_data = get_stickers_urls(sticker_page_url)
     sticker_data = download_stickers(sticker_data, download_directory)
     sticker_data = resize_stickers(sticker_data, download_directory)
-    sticker_data, real_sticker_set_name = create_telegram_sticker_set(
-        sticker_data,
-        telegram_token,
-        telegram_user_id,
-        sticker_set_name,
-        sticker_set_title,
+    sticker_data, real_sticker_set_name = asyncio.run(
+        create_telegram_sticker_set(
+            sticker_data,
+            telegram_token,
+            telegram_user_id,
+            sticker_set_name,
+            sticker_set_title,
+        )
     )
     if real_sticker_set_name is not None:
         print("✨ All done! ✨")
@@ -185,11 +193,15 @@ def resize_stickers(
             sticker_data[sid]["resized_path"] = None
             continue
         resized_path = download_directory / f"{sid}.resized.png"
-        raw = Image.open(raw_path)
-        coefficient = max(raw.width, raw.height) / 512
-        size = (int(raw.width / coefficient), int(raw.height / coefficient))
-        resized = raw.resize(size, resample=Image.LANCZOS)
-        resized.save(resized_path)
+        if not resized_path.is_file():
+            raw = Image.open(raw_path)
+            coefficient = max(raw.width, raw.height) / 512
+            size = (
+                int(raw.width / coefficient),
+                int(raw.height / coefficient),
+            )
+            resized = raw.resize(size, resample=Image.Resampling.LANCZOS)
+            resized.save(resized_path)
         sticker_data[sid]["resized_path"] = resized_path
     return sticker_data
 
